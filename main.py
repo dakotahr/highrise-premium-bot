@@ -5,10 +5,32 @@ from highrise.__main__ import BotDefinition
 import json
 from datetime import datetime, timedelta
 import random
+import threading
+from flask import Flask
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# ==========================================
+# SERVIDOR WEB PARA RENDER
+# ==========================================
+# Render Web Service necesita un puerto abierto.
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Highrise Premium Bot is running! 🤖", 200
+
+
+def run_flask():
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+
+
+# Ejecutamos Flask en segundo plano para no interferir con el bot de Highrise.
+threading.Thread(target=run_flask, daemon=True).start()
+
 
 # Configuration - Read from environment variables
 API_TOKEN = os.getenv("API_TOKEN")
@@ -37,6 +59,12 @@ class HighrisePremiumBot(BaseBot):
         self.muted_users = set()
         self.frozen_users = set()
         self.user_positions = {}  # Track user positions for anti-cheat
+        # !mi: tareas de emotes para cada usuario
+        self.mi_emote_tasks = {}
+
+        # !cloname: outfits guardados en memoria
+        self.outfit_fabrica = None
+        self.outfit_clonado = None
         
         # Emotes (200+ emotes)
         self.emotes = self._load_emotes()
@@ -116,6 +144,20 @@ class HighrisePremiumBot(BaseBot):
             "bones": "🦴", "skull": "💀", "zombie": "🧟", "mummy": "🏇"
         }
     
+    async def bucle_mi_emote(self, user_id, emote):
+        """Repite un emote sobre el usuario que ejecutó !mi."""
+        try:
+            while True:
+                await self.highrise.send_emote(emote, user_id)
+                await asyncio.sleep(12)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Error en bucle !mi: {e}")
+        finally:
+            if self.mi_emote_tasks.get(user_id) is asyncio.current_task():
+                del self.mi_emote_tasks[user_id]
+
     async def on_start(self, session_metadata):
         """Bot startup"""
         print(f"🤖 Bot connected to room: {ROOM_ID}")
@@ -234,7 +276,110 @@ class HighrisePremiumBot(BaseBot):
         elif text == "!help":
             await self.send_help()
         
-        # Emotes
+        # !MI - Ejecuta un emote real sobre quien escribe el comando.
+        # Uso: !mi ID
+        #      !mi ID loop
+        #      !mi parar
+        elif text.startswith("!mi"):
+            partes = message.strip().split()
+
+            if len(partes) == 2 and partes[1].lower() == "parar":
+                tarea = self.mi_emote_tasks.get(user.id)
+                if tarea:
+                    tarea.cancel()
+                    await self.send_message(f"🛑 Dejé de repetir el emote para @{user.username}.")
+                else:
+                    await self.send_message(f"ℹ️ @{user.username} no tiene un emote en bucle.")
+                return
+
+            if len(partes) < 2:
+                await self.highrise.send_whisper(
+                    user.id,
+                    "Uso: !mi ID o !mi ID loop"
+                )
+                return
+
+            emote_solicitado = partes[1]
+
+            if len(partes) >= 3 and partes[2].lower() == "loop":
+                tarea_anterior = self.mi_emote_tasks.get(user.id)
+                if tarea_anterior:
+                    tarea_anterior.cancel()
+
+                tarea = asyncio.create_task(
+                    self.bucle_mi_emote(user.id, emote_solicitado)
+                )
+                self.mi_emote_tasks[user.id] = tarea
+                await self.send_message(
+                    f"🔁 @{user.username} ahora tiene {emote_solicitado} en bucle."
+                )
+                return
+
+            try:
+                await self.highrise.send_emote(emote_solicitado, user.id)
+            except Exception:
+                await self.highrise.send_whisper(
+                    user.id,
+                    f"❌ No se encontró o no se pudo ejecutar el ID '{emote_solicitado}'. "
+                    "Revisa la sintaxis y asegúrate de usar un ID técnico válido."
+                )
+
+        # !CLONAME - Clona el outfit del usuario que ejecuta el comando.
+        # !cloname     -> guarda el outfit del usuario y lo pone en el bot
+        # !cloname 1   -> vuelve al outfit de fábrica guardado
+        # !cloname 2   -> vuelve al outfit clonado guardado
+        elif text == "!cloname 1":
+            if self.outfit_fabrica:
+                try:
+                    await self.highrise.set_outfit(self.outfit_fabrica)
+                    await self.send_message("👕 Volviendo al outfit 1 (Ropa de fábrica)...")
+                except Exception as e:
+                    print(f"Error outfit 1: {e}")
+                    await self.highrise.send_whisper(user.id, "❌ No pude aplicar el outfit de fábrica.")
+            else:
+                await self.highrise.send_whisper(
+                    user.id,
+                    "Aún no tengo guardado mi outfit de fábrica. Usa !cloname primero."
+                )
+
+        elif text == "!cloname 2":
+            if self.outfit_clonado:
+                try:
+                    await self.highrise.set_outfit(self.outfit_clonado)
+                    await self.send_message("✨ Cambiando al outfit 2 (Clonado)...")
+                except Exception as e:
+                    print(f"Error outfit 2: {e}")
+                    await self.highrise.send_whisper(user.id, "❌ No pude aplicar el outfit clonado.")
+            else:
+                await self.highrise.send_whisper(
+                    user.id,
+                    "No hay ningún outfit clonado guardado. Usa !cloname primero."
+                )
+
+        elif text == "!cloname":
+            await self.send_message("🤖 Analizando tu outfit para clonarlo...")
+            try:
+                if self.outfit_fabrica is None:
+                    resultado_bot = await self.highrise.get_my_outfit()
+                    self.outfit_fabrica = resultado_bot.outfit
+                    print("✅ Outfit de fábrica guardado.")
+
+                resultado_usuario = await self.highrise.get_user_outfit(user.id)
+                self.outfit_clonado = resultado_usuario.outfit
+
+                await self.highrise.set_outfit(self.outfit_clonado)
+                await self.send_message(
+                    "✨ ¡Clonación exitosa! Guardado como Outfit 2. "
+                    "Usa !cloname 1 para volver a fábrica."
+                )
+            except Exception as e:
+                print(f"Error clonar: {e}")
+                await self.highrise.send_whisper(
+                    user.id,
+                    "❌ No pude clonar tu ropa. ¡Usa prendas básicas de fábrica!"
+                )
+
+        # Emotes / emojis del bot
         elif text.startswith("!emote "):
             emote_name = text.replace("!emote ", "").strip()
             await self.handle_emote(emote_name)
@@ -401,8 +546,18 @@ class HighrisePremiumBot(BaseBot):
 - !punch @username - Punch someone
 - !bomb - Throw a bomb
 
-**Emotes:**
-- !emote name - Send an emote (200+ available)
+**Emojis:**
+- !emote name - Send one of the bot's emoji reactions
+
+**Highrise Emotes:**
+- !mi ID - Ejecuta un emote real sobre ti
+- !mi ID loop - Repite el emote sobre ti
+- !mi parar - Detiene tu loop
+
+**Outfit:**
+- !cloname - Clona tu outfit
+- !cloname 1 - Vuelve al outfit de fábrica
+- !cloname 2 - Vuelve al outfit clonado
 
 **Subscriber System:**
 - !subscribe - Subscribe for announcements
