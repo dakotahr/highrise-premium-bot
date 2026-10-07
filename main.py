@@ -65,8 +65,10 @@ class HighrisePremiumBot(BaseBot):
         self.mi_emote_tasks = {}
         # !play: tareas de emotes en bucle para cada usuario
         self.play_emote_tasks = {}
-        # !dance: una tarea de baile en bucle para el bot
+        # !dance: tarea de baile en bucle para quien escribe el comando
         self.dance_task = None
+        # !bot: tarea de emote en bucle para el bot
+        self.bot_emote_task = None
 
         # !cloname: outfits guardados en memoria
         self.outfit_fabrica = None
@@ -283,29 +285,32 @@ class HighrisePremiumBot(BaseBot):
         else:
             await self.send_message(f"🔁 @{nombre_usuario} ahora tiene {nombre_encontrado} en bucle cada 13 segundos.")
 
-    async def bucle_dance(self, dance_id):
-        """Repite un baile del catálogo dances.py cada 13 segundos sobre el bot."""
+    async def bucle_dance(self, dance_id, user_id):
+        """Repite un baile cada 13 segundos sobre quien escribió !dance."""
+        tarea_actual = asyncio.current_task()
         try:
             while True:
-                await self.highrise.send_emote(dance_id)
+                await self.highrise.send_emote(dance_id, user_id)
                 await asyncio.sleep(13)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             print(f"Error en bucle !dance: {e}")
         finally:
-            self.dance_task = None
+            if self.dance_task is tarea_actual:
+                self.dance_task = None
 
     async def handle_dance(self, user: User, message: str):
-        """Ejecuta un baile del catálogo dances.py en bucle sobre el bot."""
+        """Ejecuta un baile de dances.py en bucle sobre quien escribe el comando."""
         partes = message.strip().split()
 
         if len(partes) == 2 and partes[1].lower() == "stop":
             if self.dance_task:
                 self.dance_task.cancel()
-                await self.send_message(f"🛑 @{user.username} detuvo el baile del bot.")
+                self.dance_task = None
+                await self.send_message(f"🛑 @{user.username} detuvo su baile.")
             else:
-                await self.send_message("ℹ️ El bot no tiene un baile en bucle.")
+                await self.send_message(f"ℹ️ @{user.username} no tiene un !dance en bucle.")
             return
 
         if len(partes) < 2:
@@ -330,8 +335,59 @@ class HighrisePremiumBot(BaseBot):
         if self.dance_task:
             self.dance_task.cancel()
 
-        self.dance_task = asyncio.create_task(self.bucle_dance(dance_id))
-        await self.send_message(f"💃 El bot empezó el baile #{numero} en bucle cada 13 segundos.")
+        self.dance_task = asyncio.create_task(self.bucle_dance(dance_id, user.id))
+        await self.send_message(f"💃 @{user.username} empezó el baile #{numero} en bucle cada 13 segundos.")
+
+    async def bucle_bot_emote(self, emote_id):
+        """Repite un emote del catálogo emotes.py sobre el bot cada 13 segundos."""
+        tarea_actual = asyncio.current_task()
+        try:
+            while True:
+                await self.highrise.send_emote(emote_id)
+                await asyncio.sleep(13)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Error en bucle !bot: {e}")
+        finally:
+            if self.bot_emote_task is tarea_actual:
+                self.bot_emote_task = None
+
+    async def handle_bot(self, user: User, message: str):
+        """Ejecuta un emote de emotes.py en bucle sobre el bot."""
+        partes = message.strip().split()
+
+        if len(partes) == 2 and partes[1].lower() == "stop":
+            if self.bot_emote_task:
+                self.bot_emote_task.cancel()
+                self.bot_emote_task = None
+                await self.send_message(f"🛑 @{user.username} detuvo el emote del bot.")
+            else:
+                await self.send_message("ℹ️ El bot no tiene un emote en bucle.")
+            return
+
+        if len(partes) < 2:
+            await self.highrise.send_whisper(
+                user.id,
+                "Uso: !bot número, !bot nombre o !bot ID técnico. Usa !bot stop para detenerlo."
+            )
+            return
+
+        solicitado = " ".join(partes[1:]).strip()
+        nombre_encontrado, emote_id = self.buscar_play_emote(solicitado)
+
+        if emote_id is None:
+            await self.highrise.send_whisper(
+                user.id,
+                f"❌ No encontré el emote '{solicitado}'. Usa un número, nombre o ID válido."
+            )
+            return
+
+        if self.bot_emote_task:
+            self.bot_emote_task.cancel()
+
+        self.bot_emote_task = asyncio.create_task(self.bucle_bot_emote(emote_id))
+        await self.send_message(f"🤖 El bot empezó {nombre_encontrado} en bucle cada 13 segundos.")
 
     async def on_chat(self, user: User, message: str):
         """Handle incoming room chat messages."""
@@ -540,11 +596,17 @@ class HighrisePremiumBot(BaseBot):
         elif text == "!play" or text.startswith("!play "):
             await self.handle_play(user, message)
 
-        # DANCE - Bailes del catálogo dances.py, en bucle cada 13 segundos.
+        # DANCE - Bailes del catálogo dances.py, sobre quien escribe, cada 13 segundos.
         # Ejemplo: !dance 8
         # Detener: !dance stop
         elif text == "!dance" or text.startswith("!dance "):
             await self.handle_dance(user, message)
+
+        # BOT - Emotes del catálogo emotes.py sobre el bot, cada 13 segundos.
+        # Ejemplo: !bot 127 | !bot Savage Dance | !bot dance-tiktok8
+        # Detener: !bot stop
+        elif text == "!bot" or text.startswith("!bot "):
+            await self.handle_bot(user, message)
 
         # Emotes / emojis del bot
         elif text.startswith("!emote "):
@@ -720,10 +782,13 @@ class HighrisePremiumBot(BaseBot):
 - !play número - Repite un emote real cada 13 segundos
 - !play nombre - Repite un emote por nombre
 - !play ID - Repite un emote por ID técnico
-- !play nombre @usuario - Repite el emote sobre otro usuario
 - !play stop - Detiene el loop de !play
-- !dance número - Repite un baile del catálogo cada 13 segundos
-- !dance stop - Detiene el loop de !dance
+- !dance número - Repite un baile sobre ti cada 13 segundos
+- !dance stop - Detiene tu loop de !dance
+- !bot número - Repite un emote del catálogo sobre el bot cada 13 segundos
+- !bot nombre - Repite un emote por nombre sobre el bot
+- !bot ID - Repite un emote por ID técnico sobre el bot
+- !bot stop - Detiene el loop de !bot
 - !mi ID - Ejecuta un emote real sobre ti
 - !mi ID loop - Repite el emote sobre ti
 - !mi parar - Detiene tu loop
