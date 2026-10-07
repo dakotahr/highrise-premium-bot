@@ -1,8 +1,7 @@
 import asyncio
 import os
-from highrise import BaseBot, Event
-from highrise.api import RoomUsers, User, Message, Chat, Emote, Position
-from highrise.models import UserID, RoomID
+from highrise import BaseBot, User, Position, __main__
+from highrise.__main__ import BotDefinition
 import json
 from datetime import datetime, timedelta
 import random
@@ -12,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration - Read from environment variables
-API_TOKEN = os.getenv("API_TOKEN", "b5d74823255656efc10d9d8f386180dca66a4ad99662afb3e29f11b3970c8941")
+API_TOKEN = os.getenv("API_TOKEN")
 ROOM_ID = os.getenv("ROOM_ID", "6a394123cd2ff755d187ae89")
 
 # Verify credentials are set
@@ -117,11 +116,11 @@ class HighrisePremiumBot(BaseBot):
             "bones": "🦴", "skull": "💀", "zombie": "🧟", "mummy": "🏇"
         }
     
-    async def on_start(self):
+    async def on_start(self, session_metadata):
         """Bot startup"""
         print(f"🤖 Bot connected to room: {ROOM_ID}")
     
-    async def on_user_join(self, user: User):
+    async def on_user_join(self, user: User, position: Position):
         """Auto greeting system"""
         current_time = datetime.now()
         user_id = str(user.id)
@@ -138,11 +137,9 @@ class HighrisePremiumBot(BaseBot):
         if user_id in self.prison_users:
             self.prison_users.remove(user_id)
     
-    async def on_message(self, event: Event[Message]):
-        """Handle incoming messages"""
-        message = event.data
-        user = message.user
-        text = message.content.lower().strip()
+    async def on_chat(self, user: User, message: str):
+        """Handle incoming room chat messages."""
+        text = message.lower().strip()
         user_id = str(user.id)
         
         # VIP Commands
@@ -417,16 +414,17 @@ class HighrisePremiumBot(BaseBot):
         await self.send_message(help_text)
     
     async def send_message(self, text: str):
-        """Send message to room"""
+        """Send message to room using the current Highrise SDK."""
         try:
-            await self.client.call(Chat, content=text)
+            await self.highrise.chat(text)
         except Exception as e:
             print(f"Error sending message: {e}")
 
 
 async def main():
     bot = HighrisePremiumBot()
-    await bot.run(API_TOKEN, ROOM_ID)
+    definitions = [BotDefinition(bot, ROOM_ID, API_TOKEN)]
+    await __main__.main(definitions)
 
 
 if __name__ == "__main__":
