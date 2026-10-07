@@ -272,6 +272,17 @@ class HighrisePremiumBot(BaseBot):
             )
             return
 
+        # Probamos el ID inmediatamente. Si Highrise lo rechaza, no iniciamos el bucle.
+        try:
+            await self.highrise.send_emote(emote_id, target_id)
+        except Exception:
+            await self.highrise.send_whisper(
+                user.id,
+                f"❌ El identificador '{emote_id}' no es válido o no funciona en Highrise. "
+                f"Puedes quitarlo o corregirlo en emotes.py."
+            )
+            return
+
         # Si ya había otro !play para ese usuario, lo sustituimos.
         tarea_anterior = self.play_emote_tasks.get(target_id)
         if tarea_anterior:
@@ -332,6 +343,17 @@ class HighrisePremiumBot(BaseBot):
 
         dance_id = get_dance_by_number(numero)
 
+        # Probamos el ID inmediatamente. Si Highrise lo rechaza, no iniciamos el bucle.
+        try:
+            await self.highrise.send_emote(dance_id, user.id)
+        except Exception:
+            await self.highrise.send_whisper(
+                user.id,
+                f"❌ El identificador '{dance_id}' no es válido o no funciona en Highrise. "
+                f"Puedes quitarlo o corregirlo en dances.py."
+            )
+            return
+
         if self.dance_task:
             self.dance_task.cancel()
 
@@ -380,6 +402,17 @@ class HighrisePremiumBot(BaseBot):
             await self.highrise.send_whisper(
                 user.id,
                 f"❌ No encontré el emote '{solicitado}'. Usa un número, nombre o ID válido."
+            )
+            return
+
+        # Probamos el ID inmediatamente sobre el bot. Si Highrise lo rechaza, no iniciamos el bucle.
+        try:
+            await self.highrise.send_emote(emote_id)
+        except Exception:
+            await self.highrise.send_whisper(
+                user.id,
+                f"❌ El identificador '{emote_id}' no es válido o no funciona en Highrise. "
+                f"Puedes quitarlo o corregirlo en emotes.py."
             )
             return
 
