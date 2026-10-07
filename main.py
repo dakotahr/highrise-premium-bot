@@ -9,6 +9,7 @@ import threading
 from flask import Flask
 from dotenv import load_dotenv
 from emotes import ALL_EMOTE_LIST
+from dances import get_dance_by_number, DANCES
 
 # Load environment variables from .env file
 load_dotenv()
@@ -62,6 +63,10 @@ class HighrisePremiumBot(BaseBot):
         self.user_positions = {}  # Track user positions for anti-cheat
         # !mi: tareas de emotes para cada usuario
         self.mi_emote_tasks = {}
+        # !play: tareas de emotes en bucle para cada usuario
+        self.play_emote_tasks = {}
+        # !dance: una tarea de baile en bucle para el bot
+        self.dance_task = None
 
         # !cloname: outfits guardados en memoria
         self.outfit_fabrica = None
@@ -180,22 +185,68 @@ class HighrisePremiumBot(BaseBot):
         if user_id in self.prison_users:
             self.prison_users.remove(user_id)
     
+    async def bucle_play_emote(self, user_id, emote):
+        """Repite un emote real sobre el usuario cada 13 segundos."""
+        try:
+            while True:
+                await self.highrise.send_emote(emote, user_id)
+                await asyncio.sleep(13)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Error en bucle !play: {e}")
+        finally:
+            if self.play_emote_tasks.get(user_id) is asyncio.current_task():
+                del self.play_emote_tasks[user_id]
+
+    def buscar_play_emote(self, solicitado):
+        """Busca un emote por número, nombre o ID técnico."""
+        solicitado = solicitado.strip()
+
+        if solicitado.isdigit():
+            indice = int(solicitado)
+            if 1 <= indice <= len(ALL_EMOTE_LIST):
+                return ALL_EMOTE_LIST[indice - 1]
+            return None, None
+
+        for nombre, codigo in ALL_EMOTE_LIST:
+            if solicitado.lower() == nombre.lower() or solicitado.lower() == nombre.lower().replace(" ", ""):
+                return nombre, codigo
+
+        for _, codigo in ALL_EMOTE_LIST:
+            if solicitado.lower() == codigo.lower():
+                return codigo, codigo
+
+        return None, None
+
     async def handle_play(self, user: User, message: str):
-        """Ejecuta un emote real del catálogo emotes.py sobre el usuario."""
+        """Ejecuta y repite un emote real del catálogo emotes.py sobre el usuario."""
         partes = message.strip().split()
+
+        if len(partes) == 2 and partes[1].lower() == "stop":
+            tarea = self.play_emote_tasks.get(user.id)
+            if tarea:
+                tarea.cancel()
+                await self.send_message(f"🛑 Dejé de repetir el emote para @{user.username}.")
+            else:
+                await self.send_message(f"ℹ️ @{user.username} no tiene un !play en bucle.")
+            return
+
         if len(partes) < 2:
             await self.highrise.send_whisper(
                 user.id,
-                "Uso: !play número, !play nombre o !play ID técnico"
+                "Uso: !play número, !play nombre o !play ID técnico.\n"
+                "Usa !play stop para detener el bucle."
             )
             return
 
-        solicitado = partes[1].strip()
+        # Quitamos !play y, si existe, el último @usuario.
+        argumentos = partes[1:]
         target_id = user.id
+        nombre_usuario = None
 
-        # Opcional: !play nombre @usuario
-        if len(partes) >= 3 and partes[2].startswith("@"): 
-            nombre_usuario = partes[2][1:].strip()
+        if argumentos and argumentos[-1].startswith("@"):
+            nombre_usuario = argumentos.pop()[1:].strip()
             try:
                 usuarios = await self.highrise.get_room_users()
                 for usuario, _ in usuarios.content:
@@ -209,49 +260,78 @@ class HighrisePremiumBot(BaseBot):
                 await self.highrise.send_whisper(user.id, "❌ No pude localizar a ese usuario.")
                 return
 
-        nombre_encontrado = None
-        emote_id = None
-
-        # 1) Buscar por número de la lista
-        if solicitado.isdigit():
-            indice = int(solicitado)
-            if 1 <= indice <= len(ALL_EMOTE_LIST):
-                nombre_encontrado, emote_id = ALL_EMOTE_LIST[indice - 1]
-
-        # 2) Buscar por nombre
-        if emote_id is None:
-            for nombre, codigo in ALL_EMOTE_LIST:
-                if solicitado.lower() == nombre.lower() or solicitado.lower() == nombre.lower().replace(" ", ""):
-                    nombre_encontrado, emote_id = nombre, codigo
-                    break
-
-        # 3) Permitir directamente el ID técnico
-        if emote_id is None:
-            for _, codigo in ALL_EMOTE_LIST:
-                if solicitado.lower() == codigo.lower():
-                    emote_id = codigo
-                    nombre_encontrado = codigo
-                    break
+        solicitado = " ".join(argumentos).strip()
+        nombre_encontrado, emote_id = self.buscar_play_emote(solicitado)
 
         if emote_id is None:
             await self.highrise.send_whisper(
                 user.id,
-                f"❌ No encontré el emote '{solicitado}'. Usa !play con un número, nombre o ID válido."
+                f"❌ No encontré el emote '{solicitado}'. Usa un número, nombre o ID válido."
             )
             return
 
+        # Si ya había otro !play para ese usuario, lo sustituimos.
+        tarea_anterior = self.play_emote_tasks.get(target_id)
+        if tarea_anterior:
+            tarea_anterior.cancel()
+
+        tarea = asyncio.create_task(self.bucle_play_emote(target_id, emote_id))
+        self.play_emote_tasks[target_id] = tarea
+
+        if target_id == user.id:
+            await self.send_message(f"🔁 @{user.username} ahora tiene {nombre_encontrado} en bucle cada 13 segundos.")
+        else:
+            await self.send_message(f"🔁 @{nombre_usuario} ahora tiene {nombre_encontrado} en bucle cada 13 segundos.")
+
+    async def bucle_dance(self, dance_id):
+        """Repite un baile del catálogo dances.py cada 13 segundos sobre el bot."""
         try:
-            await self.highrise.send_emote(emote_id, target_id)
-            destino = "para ti" if target_id == user.id else f"para @{nombre_usuario}"
+            while True:
+                await self.highrise.send_emote(dance_id)
+                await asyncio.sleep(13)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Error en bucle !dance: {e}")
+        finally:
+            self.dance_task = None
+
+    async def handle_dance(self, user: User, message: str):
+        """Ejecuta un baile del catálogo dances.py en bucle sobre el bot."""
+        partes = message.strip().split()
+
+        if len(partes) == 2 and partes[1].lower() == "stop":
+            if self.dance_task:
+                self.dance_task.cancel()
+                await self.send_message(f"🛑 @{user.username} detuvo el baile del bot.")
+            else:
+                await self.send_message("ℹ️ El bot no tiene un baile en bucle.")
+            return
+
+        if len(partes) < 2:
             await self.highrise.send_whisper(
                 user.id,
-                f"▶️ {nombre_encontrado} ejecutado {destino}."
+                "Uso: !dance número (1-100). Usa !dance stop para detenerlo."
             )
-        except Exception:
-            await self.highrise.send_whisper(
-                user.id,
-                f"❌ No se pudo ejecutar el emote '{emote_id}'."
-            )
+            return
+
+        solicitado = partes[1]
+        if not solicitado.isdigit():
+            await self.highrise.send_whisper(user.id, "❌ Usa el número del baile, por ejemplo: !dance 8")
+            return
+
+        numero = int(solicitado)
+        if numero not in DANCES and numero not in {1, 2, 3, 4}:
+            await self.highrise.send_whisper(user.id, "❌ Ese número de baile no existe. El catálogo tiene 100 bailes.")
+            return
+
+        dance_id = get_dance_by_number(numero)
+
+        if self.dance_task:
+            self.dance_task.cancel()
+
+        self.dance_task = asyncio.create_task(self.bucle_dance(dance_id))
+        await self.send_message(f"💃 El bot empezó el baile #{numero} en bucle cada 13 segundos.")
 
     async def on_chat(self, user: User, message: str):
         """Handle incoming room chat messages."""
@@ -453,11 +533,18 @@ class HighrisePremiumBot(BaseBot):
                     "❌ No pude clonar tu ropa. ¡Usa prendas básicas de fábrica!"
                 )
 
-        # PLAY - Emotes reales del catálogo emotes.py
+        # PLAY - Emotes reales del catálogo emotes.py, en bucle cada 13 segundos.
         # Ejemplos: !play 127 | !play Savage Dance | !play dance-tiktok8
         # Opcional: !play Savage Dance @usuario
+        # Detener: !play stop
         elif text == "!play" or text.startswith("!play "):
             await self.handle_play(user, message)
+
+        # DANCE - Bailes del catálogo dances.py, en bucle cada 13 segundos.
+        # Ejemplo: !dance 8
+        # Detener: !dance stop
+        elif text == "!dance" or text.startswith("!dance "):
+            await self.handle_dance(user, message)
 
         # Emotes / emojis del bot
         elif text.startswith("!emote "):
@@ -630,10 +717,13 @@ class HighrisePremiumBot(BaseBot):
 - !emote name - Send one of the bot's emoji reactions
 
 **Highrise Emotes:**
-- !play número - Ejecuta un emote real del catálogo
-- !play nombre - Ejecuta un emote por nombre
-- !play ID - Ejecuta un emote por ID técnico
-- !play nombre @usuario - Ejecuta el emote sobre otro usuario
+- !play número - Repite un emote real cada 13 segundos
+- !play nombre - Repite un emote por nombre
+- !play ID - Repite un emote por ID técnico
+- !play nombre @usuario - Repite el emote sobre otro usuario
+- !play stop - Detiene el loop de !play
+- !dance número - Repite un baile del catálogo cada 13 segundos
+- !dance stop - Detiene el loop de !dance
 - !mi ID - Ejecuta un emote real sobre ti
 - !mi ID loop - Repite el emote sobre ti
 - !mi parar - Detiene tu loop
