@@ -8,6 +8,7 @@ import random
 import threading
 from flask import Flask
 from dotenv import load_dotenv
+from emotes import ALL_EMOTE_LIST
 
 # Load environment variables from .env file
 load_dotenv()
@@ -179,6 +180,79 @@ class HighrisePremiumBot(BaseBot):
         if user_id in self.prison_users:
             self.prison_users.remove(user_id)
     
+    async def handle_play(self, user: User, message: str):
+        """Ejecuta un emote real del catálogo emotes.py sobre el usuario."""
+        partes = message.strip().split()
+        if len(partes) < 2:
+            await self.highrise.send_whisper(
+                user.id,
+                "Uso: !play número, !play nombre o !play ID técnico"
+            )
+            return
+
+        solicitado = partes[1].strip()
+        target_id = user.id
+
+        # Opcional: !play nombre @usuario
+        if len(partes) >= 3 and partes[2].startswith("@"): 
+            nombre_usuario = partes[2][1:].strip()
+            try:
+                usuarios = await self.highrise.get_room_users()
+                for usuario, _ in usuarios.content:
+                    if usuario.username.lower() == nombre_usuario.lower():
+                        target_id = usuario.id
+                        break
+                else:
+                    await self.highrise.send_whisper(user.id, f"❌ No encontré a @{nombre_usuario} en la sala.")
+                    return
+            except Exception:
+                await self.highrise.send_whisper(user.id, "❌ No pude localizar a ese usuario.")
+                return
+
+        nombre_encontrado = None
+        emote_id = None
+
+        # 1) Buscar por número de la lista
+        if solicitado.isdigit():
+            indice = int(solicitado)
+            if 1 <= indice <= len(ALL_EMOTE_LIST):
+                nombre_encontrado, emote_id = ALL_EMOTE_LIST[indice - 1]
+
+        # 2) Buscar por nombre
+        if emote_id is None:
+            for nombre, codigo in ALL_EMOTE_LIST:
+                if solicitado.lower() == nombre.lower() or solicitado.lower() == nombre.lower().replace(" ", ""):
+                    nombre_encontrado, emote_id = nombre, codigo
+                    break
+
+        # 3) Permitir directamente el ID técnico
+        if emote_id is None:
+            for _, codigo in ALL_EMOTE_LIST:
+                if solicitado.lower() == codigo.lower():
+                    emote_id = codigo
+                    nombre_encontrado = codigo
+                    break
+
+        if emote_id is None:
+            await self.highrise.send_whisper(
+                user.id,
+                f"❌ No encontré el emote '{solicitado}'. Usa !play con un número, nombre o ID válido."
+            )
+            return
+
+        try:
+            await self.highrise.send_emote(emote_id, target_id)
+            destino = "para ti" if target_id == user.id else f"para @{nombre_usuario}"
+            await self.highrise.send_whisper(
+                user.id,
+                f"▶️ {nombre_encontrado} ejecutado {destino}."
+            )
+        except Exception:
+            await self.highrise.send_whisper(
+                user.id,
+                f"❌ No se pudo ejecutar el emote '{emote_id}'."
+            )
+
     async def on_chat(self, user: User, message: str):
         """Handle incoming room chat messages."""
         text = message.lower().strip()
@@ -379,6 +453,12 @@ class HighrisePremiumBot(BaseBot):
                     "❌ No pude clonar tu ropa. ¡Usa prendas básicas de fábrica!"
                 )
 
+        # PLAY - Emotes reales del catálogo emotes.py
+        # Ejemplos: !play 127 | !play Savage Dance | !play dance-tiktok8
+        # Opcional: !play Savage Dance @usuario
+        elif text == "!play" or text.startswith("!play "):
+            await self.handle_play(user, message)
+
         # Emotes / emojis del bot
         elif text.startswith("!emote "):
             emote_name = text.replace("!emote ", "").strip()
@@ -550,6 +630,10 @@ class HighrisePremiumBot(BaseBot):
 - !emote name - Send one of the bot's emoji reactions
 
 **Highrise Emotes:**
+- !play número - Ejecuta un emote real del catálogo
+- !play nombre - Ejecuta un emote por nombre
+- !play ID - Ejecuta un emote por ID técnico
+- !play nombre @usuario - Ejecuta el emote sobre otro usuario
 - !mi ID - Ejecuta un emote real sobre ti
 - !mi ID loop - Repite el emote sobre ti
 - !mi parar - Detiene tu loop
